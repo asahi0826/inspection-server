@@ -16,15 +16,89 @@ from urllib.parse import urlparse, parse_qs
 
 DATA_FILE = "data.json"
 
+DEFAULT_MEMBERS = ['志田拓真', '笹原一興', '白幡　桂', '難波　啓', '矢口輝昌', '櫻井亮輔', '佐藤尚貴', '志田正嵩', '榎本主磨', '渡部駿介', '荒瀬　匠', '難波明治', '松浦 史', '金内颯太', '平藤孝幸', '蛸井滉太', '小林優太', '渡部海斗', '林　洸南', '小林　ライ', '渡部敦貴', '宮崎涼雅', '亀井誠一', '渡部　賢', '佐藤克也', '渡會恭平', '飯鉢航大', '宮本可奈子', '清和真伍', '佐藤由紀子', '佐藤大地']
+
+# PostgreSQL接続（DATABASE_URL環境変数があれば使用）
+DATABASE_URL = os.environ.get("DATABASE_URL")
+pg_conn = None
+
+def get_pg_conn():
+    global pg_conn
+    if DATABASE_URL:
+        try:
+            import psycopg2
+            if pg_conn is None or pg_conn.closed:
+                pg_conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+                pg_conn.autocommit = True
+                # テーブル作成
+                with pg_conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS appdata (
+                            key TEXT PRIMARY KEY,
+                            value TEXT
+                        )
+                    """)
+            return pg_conn
+        except Exception as e:
+            print(f"[DB接続エラー] {e}")
+    return None
+
+def get_default_data():
+    return {"members": DEFAULT_MEMBERS, "schedule": {}, "date": datetime.now().strftime("%Y-%m-%d")}
+
 def load_data():
+    conn = get_pg_conn()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT value FROM appdata WHERE key = 'main'")
+                row = cur.fetchone()
+                if row:
+                    data = json.loads(row[0])
+                    if "members" not in data:
+                        data["members"] = DEFAULT_MEMBERS
+                    # 日付が変わっていたら自動リセット
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    last_date = data.get("date", today)
+                    if last_date != today:
+                        blue_count = 0
+                        yellow_count = 0
+                        schedule = data.get("schedule", {})
+                        for member in schedule:
+                            for time in schedule[member]:
+                                for entry in schedule[member][time]:
+                                    if isinstance(entry, dict):
+                                        if entry.get("allowed"):
+                                            blue_count += 1
+                                        else:
+                                            yellow_count += 1
+                                    else:
+                                        blue_count += 1
+                        if blue_count > 0 or yellow_count > 0:
+                            data["yesterday"] = {"blue": blue_count, "yellow": yellow_count}
+                        data["schedule"] = {}
+                        data["completed"] = {}
+                        data["pending"] = {}
+                        data["accept"] = {}
+                        data["date"] = today
+                        save_data(data)
+                        print(f"[自動リセット] {last_date} → {today} 青{blue_count}件 黄{yellow_count}件")
+                    return data
+                else:
+                    d = get_default_data()
+                    save_data(d)
+                    return d
+        except Exception as e:
+            print(f"[DB読込エラー] {e}")
+    # fallback: ファイル
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # 日付が変わっていたら自動リセット
+        if "members" not in data:
+            data["members"] = DEFAULT_MEMBERS
         today = datetime.now().strftime("%Y-%m-%d")
         last_date = data.get("date", today)
         if last_date != today:
-            # 昨日の集計を保存
             blue_count = 0
             yellow_count = 0
             schedule = data.get("schedule", {})
@@ -47,11 +121,23 @@ def load_data():
             data["date"] = today
             with open(DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            print(f"[自動リセット] 日付が変わりました（{last_date} → {today}）昨日: 青{blue_count}件 黄{yellow_count}件")
+            print(f"[自動リセット] 日付が変わりました（{last_date} → {today}）")
         return data
-    return {"members": ['志田拓真', '笹原一興', '白幡\u3000桂', '難波\u3000啓', '矢口輝昌', '櫻井亮輔', '佐藤尚貴', '志田正嵩', '榎本主磨', '渡部駿介', '荒瀬\u3000匠', '難波明治', '松浦 史', '金内颯太', '平藤孝幸', '蛸井滉太', '小林優太', '渡部海斗', '林\u3000洸南', '小林\u3000ライ', '渡部敦貴', '宮崎涼雅', '亀井誠一', '渡部\u3000賢', '佐藤克也', '渡會恭平', '飯鉢航大', '宮本可奈子', '清和真伍', '佐藤由紀子', '佐藤大地'], "schedule": {}, "date": datetime.now().strftime("%Y-%m-%d")}
+    return get_default_data()
 
 def save_data(data):
+    conn = get_pg_conn()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO appdata (key, value) VALUES ('main', %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                    (json.dumps(data, ensure_ascii=False),)
+                )
+            return
+        except Exception as e:
+            print(f"[DB保存エラー] {e}")
+    # fallback: ファイル
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
