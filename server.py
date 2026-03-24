@@ -11,8 +11,13 @@ import os
 import csv
 import io
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, parse_qs
+
+JST = timezone(timedelta(hours=9))
+
+def now_jst():
+    return datetime.now(JST)
 
 DATA_FILE = "data.json"
 
@@ -44,7 +49,7 @@ def get_pg_conn():
     return None
 
 def get_default_data():
-    return {"members": DEFAULT_MEMBERS, "schedule": {}, "date": datetime.now().strftime("%Y-%m-%d")}
+    return {"members": DEFAULT_MEMBERS, "schedule": {}, "date": now_jst().strftime("%Y-%m-%d")}
 
 def load_data():
     conn = get_pg_conn()
@@ -58,7 +63,7 @@ def load_data():
                     if "members" not in data:
                         data["members"] = DEFAULT_MEMBERS
                     # 日付が変わっていたら自動リセット
-                    today = datetime.now().strftime("%Y-%m-%d")
+                    today = now_jst().strftime("%Y-%m-%d")
                     last_date = data.get("date", today)
                     if last_date != today:
                         blue_count = 0
@@ -96,7 +101,7 @@ def load_data():
             data = json.load(f)
         if "members" not in data:
             data["members"] = DEFAULT_MEMBERS
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = now_jst().strftime("%Y-%m-%d")
         last_date = data.get("date", today)
         if last_date != today:
             blue_count = 0
@@ -149,7 +154,7 @@ TIMES = ['8時〜9時','9時〜10時','10時〜11時','11時〜12時',
 class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]} {args[1]}")
+        print(f"[{now_jst().strftime("%H:%M:%S")}] {args[0]} {args[1]}")
 
     def send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -172,7 +177,7 @@ class Handler(BaseHTTPRequestHandler):
         body = ("\ufeff" + csv_text).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/csv; charset=utf-8")
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = now_jst().strftime("%Y-%m-%d")
         self.send_header("Content-Disposition", f'attachment; filename="inspection_{today}.csv"')
         self.send_header("Content-Length", len(body))
         self.end_headers()
@@ -198,7 +203,7 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/data":
             # アクセス時に日付チェックして自動リセット
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = now_jst().strftime("%Y-%m-%d")
             if db.get("date") and db["date"] != today:
                 blue_count = 0
                 yellow_count = 0
@@ -271,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
             text = " ".join(parts)
 
             # 入力時刻を記録
-            now = datetime.now()
+            now = now_jst()
             total_min = now.hour * 60 + now.minute
             in_allowed = (480 <= total_min < 540) or (660 <= total_min < 720)
             entry = {"text": text, "allowed": in_allowed}
@@ -283,7 +288,7 @@ class Handler(BaseHTTPRequestHandler):
             if time not in db["schedule"][member]:
                 db["schedule"][member][time] = []
             db["schedule"][member][time].append(entry)
-            db["date"] = datetime.now().strftime("%Y-%m-%d")
+            db["date"] = now_jst().strftime("%Y-%m-%d")
             save_data(db)
             self.send_json({"ok": True})
 
